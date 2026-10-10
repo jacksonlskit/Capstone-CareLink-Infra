@@ -1,4 +1,4 @@
-name: Test Infra OIDC Access
+name: Verify All AWS OIDC Roles
 
 on:
   workflow_dispatch:
@@ -8,29 +8,59 @@ permissions:
   contents: read
 
 jobs:
-  test-infra-oidc:
-    name: Test Infra OIDC Access
+  test-sa-role:
+    name: 1. Verify SA Role
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout Repository
+      - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Inspect Actual GitHub OIDC Claims
-        run: |
-          TOKEN=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com" | jq -r '.value')
-          echo "=== TOKEN CLAIMS ==="
-          echo "$TOKEN" | cut -d. -f2 | base64 -d 2>/dev/null | jq '{sub, aud, repository}'
-          echo "===================="
-
-      - name: Assume AWS Role via OIDC (SA Role)
+      - name: Assume SA Role via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.SA_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
           audience: sts.amazonaws.com
 
-      - name: Verify AWS Identity
+      - name: Validate Identity
         run: |
+          echo "=== SA Role Assumed Successfully ==="
+          aws sts get-caller-identity
+
+  test-sre-role:
+    name: 2. Verify SRE Role
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Assume SRE Role via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.SRE_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          audience: sts.amazonaws.com
+
+      - name: Validate Identity
+        run: |
+          echo "=== SRE Role Assumed Successfully ==="
+          aws sts get-caller-identity
+
+  test-devops-role:
+    name: 3. Verify DevOps Role
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Assume DevOps Role via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.DEVOPS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          audience: sts.amazonaws.com
+
+      - name: Validate Identity
+        run: |
+          echo "=== DevOps Role Assumed Successfully ==="
           aws sts get-caller-identity
