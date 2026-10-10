@@ -12,88 +12,67 @@ terraform {
   }
 }
 
-# ------------------------------------------------------------------------------
-# Provider Configurations
-# ------------------------------------------------------------------------------
 provider "aws" {
-  region = local.aws_region
+  region = "us-east-1"
 }
 
 provider "github" {
   owner = local.github_owner
-  # Authenticates automatically via GITHUB_TOKEN environment variable
 }
 
-# ------------------------------------------------------------------------------
-# Locals & Shared Parameters
-# ------------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# LOCALS & DATA SOURCES
+# -----------------------------------------------------------------------------
+
 locals {
   github_owner = "jacksonlskit"
-
-  # Two distinct repositories
-  repo_infra = "Capstone-CareLink-Infra"
-  repo_app   = "Capstone-CareLink-App"
-
-  path_infra = "${local.github_owner}/${local.repo_infra}"
-  path_app   = "${local.github_owner}/${local.repo_app}"
-
-  aws_region = "us-east-1"
-  oidc_url   = "https://token.actions.githubusercontent.com"
-  audience   = "sts.amazonaws.com"
+  repo_infra   = "Capstone-CareLink-Infra"
+  repo_app     = "Capstone-CareLink-App" # Set to Capstone-CareLink-Health if using that name
+  aws_region   = "us-east-1"
+  oidc_url     = "https://token.actions.githubusercontent.com"
 }
 
-# Look up current user for approval assignment
+data "aws_caller_identity" "current" {}
+
 data "github_user" "current" {
   username = local.github_owner
 }
 
-# ==============================================================================
-# 1. Look up existing AWS IAM OIDC Provider
-# ==============================================================================
 data "aws_iam_openid_connect_provider" "github" {
   url = local.oidc_url
 }
 
-# ==============================================================================
-# 2. DevOps Role: Bound strictly to the APP Repository Environments
-# ==============================================================================
-data "aws_iam_policy_document" "devops_trust" {
-  statement {
-    effect  = "Allow"
-    actions = ["sts:AssumeRoleWithWebIdentity"]
+# -----------------------------------------------------------------------------
+# 1. AWS IAM ROLES (OIDC TRUST POLICIES)
+# -----------------------------------------------------------------------------
 
-    principals {
-      type        = "Federated"
-      identifiers = [data.aws_iam_openid_connect_provider.github.arn]
-    }
-
-    condition {
-      test     = "StringEquals"
-      variable = "token.actions.githubusercontent.com:aud"
-      values   = [local.audience]
-    }
-
-    # Only GitHub Actions runs originating from the App repository can assume this role
-    condition {
-      test     = "StringEquals"
-      variable = "token.actions.githubusercontent.com:sub"
-      values = [
-        "repo:${local.path_app}:environment:staging",
-        "repo:${local.path_app}:environment:production"
-      ]
-    }
-  }
-}
-
+# Role 1: DevOps Role (Container build & ECR push)
 resource "aws_iam_role" "devops" {
-  name               = "carelink-github-devops-role"
-  assume_role_policy = data.aws_iam_policy_document.devops_trust.json
+  name = "carelink-github-devops-role"
 
-  tags = {
-    Role       = "DevOps"
-    Repository = local.repo_app
-    Project    = "CareLink-Health"
-  }
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = {
+          Federated = data.aws_iam_openid_connect_provider.github.arn
+        }
+        Action = "sts:AssumeRoleWithWebIdentity"
+        Condition = {
+          StringEquals = {
+            "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
+          }
+          StringLike = {
+            "token.actions.githubusercontent.com:sub" = [
+              "repo:${local.github_owner}/${local.repo_app}:*",
+              "repo:${local.github_owner}/${local.repo_infra}:*"
+            ]
+          }
+        }
+      }
+    ]
+  })
 }
 
 resource "aws_iam_role_policy_attachment" "devops_ecr" {
@@ -101,46 +80,33 @@ resource "aws_iam_role_policy_attachment" "devops_ecr" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPowerUser"
 }
 
-# ==============================================================================
-# 3. Solutions Architect (SA) Role: Bound strictly to the INFRA Repository
-# ==============================================================================
-data "aws_iam_policy_document" "sa_trust" {
-  statement {
-    effect  = "Allow"
-    actions = ["sts:AssumeRoleWithWebIdentity"]
-
-    principals {
-      type        = "Federated"
-      identifiers = [data.aws_iam_openid_connect_provider.github.arn]
-    }
-
-    condition {
-      test     = "StringEquals"
-      variable = "token.actions.githubusercontent.com:aud"
-      values   = [local.audience]
-    }
-
-    # Only PRs and branches inside the Infra repository can assume this role
-    condition {
-      test     = "StringLike"
-      variable = "token.actions.githubusercontent.com:sub"
-      values = [
-        "repo:${local.path_infra}:ref:refs/heads/*",
-        "repo:${local.path_infra}:pull_request"
-      ]
-    }
-  }
-}
-
+# Role 2: SA Role (Terraform planning and read operations)
 resource "aws_iam_role" "sa" {
-  name               = "carelink-github-sa-role"
-  assume_role_policy = data.aws_iam_policy_document.sa_trust.json
+  name = "carelink-github-sa-role"
 
-  tags = {
-    Role       = "SolutionsArchitect"
-    Repository = local.repo_infra
-    Project    = "CareLink-Health"
-  }
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = {
+          Federated = data.aws_iam_openid_connect_provider.github.arn
+        }
+        Action = "sts:AssumeRoleWithWebIdentity"
+        Condition = {
+          StringEquals = {
+            "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
+          }
+          StringLike = {
+            "token.actions.githubusercontent.com:sub" = [
+              "repo:${local.github_owner}/${local.repo_infra}:*",
+              "repo:${local.github_owner}/${local.repo_app}:*"
+            ]
+          }
+        }
+      }
+    ]
+  })
 }
 
 resource "aws_iam_role_policy_attachment" "sa_readonly" {
@@ -148,44 +114,33 @@ resource "aws_iam_role_policy_attachment" "sa_readonly" {
   policy_arn = "arn:aws:iam::aws:policy/ReadOnlyAccess"
 }
 
-# ==============================================================================
-# 4. SRE Role: Bound to maintenance workflow in the INFRA Repository
-# ==============================================================================
-data "aws_iam_policy_document" "sre_trust" {
-  statement {
-    effect  = "Allow"
-    actions = ["sts:AssumeRoleWithWebIdentity"]
-
-    principals {
-      type        = "Federated"
-      identifiers = [data.aws_iam_openid_connect_provider.github.arn]
-    }
-
-    condition {
-      test     = "StringEquals"
-      variable = "token.actions.githubusercontent.com:aud"
-      values   = [local.audience]
-    }
-
-    condition {
-      test     = "StringLike"
-      variable = "token.actions.githubusercontent.com:job_workflow_ref"
-      values = [
-        "${local.path_infra}/.github/workflows/sre-ops.yml@*"
-      ]
-    }
-  }
-}
-
+# Role 3: SRE Role (Observability and CloudWatch operations)
 resource "aws_iam_role" "sre" {
-  name               = "carelink-github-sre-role"
-  assume_role_policy = data.aws_iam_policy_document.sre_trust.json
+  name = "carelink-github-sre-role"
 
-  tags = {
-    Role       = "SRE"
-    Repository = local.repo_infra
-    Project    = "CareLink-Health"
-  }
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = {
+          Federated = data.aws_iam_openid_connect_provider.github.arn
+        }
+        Action = "sts:AssumeRoleWithWebIdentity"
+        Condition = {
+          StringEquals = {
+            "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
+          }
+          StringLike = {
+            "token.actions.githubusercontent.com:sub" = [
+              "repo:${local.github_owner}/${local.repo_infra}:*",
+              "repo:${local.github_owner}/${local.repo_app}:*"
+            ]
+          }
+        }
+      }
+    ]
+  })
 }
 
 resource "aws_iam_role_policy_attachment" "sre_cloudwatch" {
@@ -193,58 +148,82 @@ resource "aws_iam_role_policy_attachment" "sre_cloudwatch" {
   policy_arn = "arn:aws:iam::aws:policy/CloudWatchFullAccess"
 }
 
-# ==============================================================================
-# 5. APP REPO CONFIGURATION (Capstone-CareLink-App)
-# ==============================================================================
+# -----------------------------------------------------------------------------
+# 2. GITHUB ENVIRONMENTS (APP REPO)
+# -----------------------------------------------------------------------------
 
-# Environments for App Deployment
-resource "github_repository_environment" "app_staging" {
+resource "github_repository_environment" "staging" {
   repository  = local.repo_app
   environment = "staging"
 }
 
-resource "github_repository_environment" "app_production" {
+resource "github_repository_environment" "production" {
   repository  = local.repo_app
   environment = "production"
 
   reviewers {
     users = [data.github_user.current.id]
   }
-
-  deployment_branch_policy {
-    protected_branches     = false
-    custom_branch_policies = true
-  }
 }
 
-resource "github_repository_environment_deployment_policy" "app_production_branch" {
-  repository     = local.repo_app
-  environment    = github_repository_environment.app_production.environment
-  branch_pattern = "main"
-}
+# -----------------------------------------------------------------------------
+# 3. GLOBAL REPOSITORY VARIABLES (AVAILABLE TO ALL ACTIONS)
+# -----------------------------------------------------------------------------
 
-# Environment-Scoped DEVOPS_ROLE_ARN Variables in App Repo
-resource "github_actions_environment_variable" "app_staging_devops_role" {
-  repository    = local.repo_app
-  environment   = github_repository_environment.app_staging.environment
-  variable_name = "DEVOPS_ROLE_ARN"
-  value         = aws_iam_role.devops.arn
-}
-
-resource "github_actions_environment_variable" "app_prod_devops_role" {
-  repository    = local.repo_app
-  environment   = github_repository_environment.app_production.environment
-  variable_name = "DEVOPS_ROLE_ARN"
-  value         = aws_iam_role.devops.arn
-}
-
+# Variables for App Repository
 resource "github_actions_variable" "app_aws_region" {
   repository    = local.repo_app
   variable_name = "AWS_REGION"
   value         = local.aws_region
 }
 
-# Ruleset for App Repo: Requires unit tests, linting, and PR review
+resource "github_actions_variable" "app_devops_role" {
+  repository    = local.repo_app
+  variable_name = "DEVOPS_ROLE_ARN"
+  value         = aws_iam_role.devops.arn
+}
+
+resource "github_actions_variable" "app_sa_role" {
+  repository    = local.repo_app
+  variable_name = "SA_ROLE_ARN"
+  value         = aws_iam_role.sa.arn
+}
+
+resource "github_actions_variable" "app_sre_role" {
+  repository    = local.repo_app
+  variable_name = "SRE_ROLE_ARN"
+  value         = aws_iam_role.sre.arn
+}
+
+# Variables for Infra Repository
+resource "github_actions_variable" "infra_aws_region" {
+  repository    = local.repo_infra
+  variable_name = "AWS_REGION"
+  value         = local.aws_region
+}
+
+resource "github_actions_variable" "infra_devops_role" {
+  repository    = local.repo_infra
+  variable_name = "DEVOPS_ROLE_ARN"
+  value         = aws_iam_role.devops.arn
+}
+
+resource "github_actions_variable" "infra_sa_role" {
+  repository    = local.repo_infra
+  variable_name = "SA_ROLE_ARN"
+  value         = aws_iam_role.sa.arn
+}
+
+resource "github_actions_variable" "infra_sre_role" {
+  repository    = local.repo_infra
+  variable_name = "SRE_ROLE_ARN"
+  value         = aws_iam_role.sre.arn
+}
+
+# -----------------------------------------------------------------------------
+# 4. GITHUB BRANCH PROTECTION RULESETS
+# -----------------------------------------------------------------------------
+
 resource "github_repository_ruleset" "app_main_protection" {
   name        = "app-main-protection"
   repository  = local.repo_app
@@ -265,43 +244,21 @@ resource "github_repository_ruleset" "app_main_protection" {
     pull_request {
       required_approving_review_count = 1
       dismiss_stale_reviews_on_push   = true
-      require_code_owner_review       = false
       require_last_push_approval      = true
     }
 
     required_status_checks {
       strict_required_status_checks_policy = true
-
-      required_check { context = "test" }
-      required_check { context = "lint-and-typecheck" }
+      required_check {
+        context = "lint-and-typecheck"
+      }
+      required_check {
+        context = "test"
+      }
     }
   }
 }
 
-# ==============================================================================
-# 6. INFRA REPO CONFIGURATION (Capstone-CareLink-Infra)
-# ==============================================================================
-
-# Repository Variables in Infra Repo
-resource "github_actions_variable" "infra_sa_role" {
-  repository    = local.repo_infra
-  variable_name = "SA_ROLE_ARN"
-  value         = aws_iam_role.sa.arn
-}
-
-resource "github_actions_variable" "infra_sre_role" {
-  repository    = local.repo_infra
-  variable_name = "SRE_ROLE_ARN"
-  value         = aws_iam_role.sre.arn
-}
-
-resource "github_actions_variable" "infra_aws_region" {
-  repository    = local.repo_infra
-  variable_name = "AWS_REGION"
-  value         = local.aws_region
-}
-
-# Ruleset for Infra Repo: Requires terraform plan check and PR review
 resource "github_repository_ruleset" "infra_main_protection" {
   name        = "infra-main-protection"
   repository  = local.repo_infra
@@ -322,37 +279,30 @@ resource "github_repository_ruleset" "infra_main_protection" {
     pull_request {
       required_approving_review_count = 1
       dismiss_stale_reviews_on_push   = true
-      require_code_owner_review       = false
       require_last_push_approval      = true
     }
 
     required_status_checks {
       strict_required_status_checks_policy = true
-
-      # Workflow check in Infra repository verifying terraform plan
-      required_check { context = "terraform-plan" }
+      required_check {
+        context = "terraform-plan"
+      }
     }
   }
 }
 
-# ==============================================================================
-# Outputs
-# ==============================================================================
-output "oidc_provider_arn" {
-  value = data.aws_iam_openid_connect_provider.github.arn
-}
+# -----------------------------------------------------------------------------
+# OUTPUTS
+# -----------------------------------------------------------------------------
 
 output "devops_role_arn" {
-  description = "Assumed by App repo for deployment"
-  value       = aws_iam_role.devops.arn
+  value = aws_iam_role.devops.arn
 }
 
 output "sa_role_arn" {
-  description = "Assumed by Infra repo for PR checks & plans"
-  value       = aws_iam_role.sa.arn
+  value = aws_iam_role.sa.arn
 }
 
 output "sre_role_arn" {
-  description = "Assumed by Infra repo for SRE ops"
-  value       = aws_iam_role.sre.arn
+  value = aws_iam_role.sre.arn
 }
