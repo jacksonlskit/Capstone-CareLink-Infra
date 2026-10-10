@@ -65,8 +65,8 @@ resource "aws_iam_role" "devops" {
           }
           StringLike = {
             "token.actions.githubusercontent.com:sub" = [
-              "repo:${local.github_owner}/${local.repo_app}:*",
-              "repo:${local.github_owner}/${local.repo_infra}:*"
+              "repo:${local.github_owner}*${local.repo_app}*:*",
+              "repo:${local.github_owner}*${local.repo_infra}*:*"
             ]
           }
         }
