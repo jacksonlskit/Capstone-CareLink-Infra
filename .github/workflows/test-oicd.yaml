@@ -1,38 +1,29 @@
-name: "Test Production Deployment"
+name: "Test Infra OIDC"
 
 on:
   workflow_dispatch:
 
 permissions:
-  id-token: write   # Mandatory for OIDC token request
+  id-token: write
   contents: read
 
 jobs:
-  deploy-prod:
-    name: "Test Production Deployment"
+  test-infra-oidc:
+    name: "Test Infra OIDC Access"
     runs-on: ubuntu-latest
-    environment: production # Mandatory to inject production environment variables
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Print Debug Info
-        run: |
-          echo "Region: ${{ vars.AWS_REGION }}"
-          echo "Role ARN length: ${{ steps.check.outputs.len }}"
-          if [ -z "${{ vars.DEVOPS_ROLE_ARN }}" ]; then
-            echo "ERROR: DEVOPS_ROLE_ARN is empty!"
-            exit 1
-          fi
-
-      - name: Assume AWS Role via OIDC
+      - name: Assume AWS Role via OIDC (SA Role)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ vars.DEVOPS_ROLE_ARN }}
+          role-to-assume: ${{ vars.SA_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
           audience: sts.amazonaws.com
 
       - name: Verify AWS Identity
         run: |
+          echo "Assumed role successfully:"
           aws sts get-caller-identity
