@@ -1,21 +1,30 @@
-name: "Test OIDC & Approval Gate"
+name: "Test Production Deployment"
 
 on:
   workflow_dispatch:
 
 permissions:
-  id-token: write
+  id-token: write   # Mandatory for OIDC token request
   contents: read
 
 jobs:
   deploy-prod:
     name: "Test Production Deployment"
     runs-on: ubuntu-latest
-    environment: production
+    environment: production # Mandatory to inject production environment variables
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
+
+      - name: Print Debug Info
+        run: |
+          echo "Region: ${{ vars.AWS_REGION }}"
+          echo "Role ARN length: ${{ steps.check.outputs.len }}"
+          if [ -z "${{ vars.DEVOPS_ROLE_ARN }}" ]; then
+            echo "ERROR: DEVOPS_ROLE_ARN is empty!"
+            exit 1
+          fi
 
       - name: Assume AWS Role via OIDC
         uses: aws-actions/configure-aws-credentials@v4
@@ -26,5 +35,4 @@ jobs:
 
       - name: Verify AWS Identity
         run: |
-          echo "Successfully assumed AWS role!"
           aws sts get-caller-identity
