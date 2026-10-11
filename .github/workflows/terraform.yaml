@@ -16,13 +16,39 @@ permissions:
   id-token: write
   contents: read
   pull-requests: write
+  security-events: write # Required for uploading SARIF reports to GitHub Security
 
 jobs:
   # ===========================================================================
-  # 1. PLAN PHASE: Concurrently plans Staging & Production on Pull Request
+  # 1. SECURITY AUDIT: Snyk Infrastructure-as-Code (IaC) Scan
+  # ===========================================================================
+  security-scan:
+    name: "Snyk IaC Security Scan"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Run Snyk IaC Scan
+        uses: snyk/actions/iac@master
+        continue-on-error: true # Allows SARIF generation even if vulnerabilities exist
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --severity-threshold=high --sarif-file-output=snyk.sarif
+
+      - name: Upload Snyk Scan Results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: snyk.sarif
+
+  # ===========================================================================
+  # 2. PLAN PHASE: Concurrently plans Staging & Production on Pull Request
   # ===========================================================================
   terraform-plan:
     name: "Terraform Plan (${{ matrix.environment }})"
+    needs: [security-scan]
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     strategy:
@@ -104,10 +130,11 @@ jobs:
             });
 
   # ===========================================================================
-  # 2. APPLY STAGING: Applies automatically on Push to Main
+  # 3. APPLY STAGING: Applies automatically on Push to Main
   # ===========================================================================
   deploy-staging:
     name: "Apply Staging"
+    needs: [security-scan]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: staging
@@ -143,14 +170,14 @@ jobs:
             -input=false
 
   # ===========================================================================
-  # 3. APPLY PRODUCTION: Runs after Staging + Pauses for Manual Approval
+  # 4. APPLY PRODUCTION: Runs after Staging + Pauses for Manual Approval
   # ===========================================================================
   deploy-production:
     name: "Apply Production"
     needs: [deploy-staging]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    environment: production # Triggers manual reviewer approval gate
+    environment: production
 
     steps:
       - name: Checkout Code
