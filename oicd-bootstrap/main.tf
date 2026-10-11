@@ -1,5 +1,5 @@
 terraform {
-  required_version = ">= 1.5.0"
+  required_version = ">= 1.10.0"
   required_providers {
     aws = {
       source  = "hashicorp/aws"
@@ -43,7 +43,45 @@ data "aws_iam_openid_connect_provider" "github" {
 }
 
 # -----------------------------------------------------------------------------
-# 1. AWS IAM ROLES (OIDC TRUST POLICIES WITH GITHUB ID WILDCARDS)
+# 1. S3 BACKEND STORAGE (OPTION 1: NATIVE S3 LOCKFILE - NO DYNAMODB)
+# -----------------------------------------------------------------------------
+
+resource "aws_s3_bucket" "tf_state" {
+  bucket = "carelink-terraform-state-${local.aws_region}-${data.aws_caller_identity.current.account_id}"
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+resource "aws_s3_bucket_versioning" "tf_state_versioning" {
+  bucket = aws_s3_bucket.tf_state.id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "tf_state_crypto" {
+  bucket = aws_s3_bucket.tf_state.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "tf_state_block_public" {
+  bucket = aws_s3_bucket.tf_state.id
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+# -----------------------------------------------------------------------------
+# 2. AWS IAM ROLES (OIDC TRUST POLICIES WITH WILDCARD CLAIMS)
 # -----------------------------------------------------------------------------
 
 # Role 1: DevOps Role (Container build & ECR push)
@@ -80,7 +118,7 @@ resource "aws_iam_role_policy_attachment" "devops_ecr" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPowerUser"
 }
 
-# Role 2: SA Role (Terraform planning and resource provisioning)
+# Role 2: SA Role (Terraform planning and full resource provisioning)
 resource "aws_iam_role" "sa" {
   name = "carelink-github-sa-role"
 
@@ -149,15 +187,32 @@ resource "aws_iam_role_policy_attachment" "sre_cloudwatch" {
 }
 
 # -----------------------------------------------------------------------------
-# 2. GITHUB ENVIRONMENTS (APP REPO)
+# 3. GITHUB ENVIRONMENTS (STAGING & PRODUCTION FOR BOTH REPOSITORIES)
 # -----------------------------------------------------------------------------
 
-resource "github_repository_environment" "staging" {
+# Infra Repo Environments
+resource "github_repository_environment" "infra_staging" {
+  repository  = local.repo_infra
+  environment = "staging"
+}
+
+resource "github_repository_environment" "infra_production" {
+  repository  = local.repo_infra
+  environment = "production"
+
+  # Production requires manual reviewer approval before apply
+  reviewers {
+    users = [data.github_user.current.id]
+  }
+}
+
+# App Repo Environments
+resource "github_repository_environment" "app_staging" {
   repository  = local.repo_app
   environment = "staging"
 }
 
-resource "github_repository_environment" "production" {
+resource "github_repository_environment" "app_production" {
   repository  = local.repo_app
   environment = "production"
 
@@ -167,7 +222,7 @@ resource "github_repository_environment" "production" {
 }
 
 # -----------------------------------------------------------------------------
-# 3. GLOBAL REPOSITORY VARIABLES (FOR ALL GITHUB ACTIONS)
+# 4. GLOBAL REPOSITORY VARIABLES
 # -----------------------------------------------------------------------------
 
 # App Repo Variables
@@ -220,8 +275,15 @@ resource "github_actions_variable" "infra_sre_role" {
   value         = aws_iam_role.sre.arn
 }
 
+# State Bucket Name Variable for Workflows
+resource "github_actions_variable" "infra_state_bucket" {
+  repository    = local.repo_infra
+  variable_name = "TF_STATE_BUCKET"
+  value         = aws_s3_bucket.tf_state.bucket
+}
+
 # -----------------------------------------------------------------------------
-# 4. GITHUB BRANCH PROTECTION RULESETS
+# 5. GITHUB BRANCH PROTECTION RULESETS
 # -----------------------------------------------------------------------------
 
 resource "github_repository_ruleset" "app_main_protection" {
@@ -285,7 +347,10 @@ resource "github_repository_ruleset" "infra_main_protection" {
     required_status_checks {
       strict_required_status_checks_policy = true
       required_check {
-        context = "terraform-plan"
+        context = "Terraform Plan (staging)"
+      }
+      required_check {
+        context = "Terraform Plan (production)"
       }
     }
   }
@@ -294,6 +359,10 @@ resource "github_repository_ruleset" "infra_main_protection" {
 # -----------------------------------------------------------------------------
 # OUTPUTS
 # -----------------------------------------------------------------------------
+
+output "tf_state_bucket_name" {
+  value = aws_s3_bucket.tf_state.bucket
+}
 
 output "devops_role_arn" {
   value = aws_iam_role.devops.arn
