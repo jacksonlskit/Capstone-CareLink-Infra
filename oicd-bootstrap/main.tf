@@ -27,7 +27,7 @@ provider "github" {
 locals {
   github_owner = "jacksonlskit"
   repo_infra   = "Capstone-CareLink-Infra"
-  repo_app     = "Capstone-CareLink-App" # Set to Capstone-CareLink-Health if using that name
+  repo_app     = "Capstone-CareLink-App"
   aws_region   = "us-east-1"
   oidc_url     = "https://token.actions.githubusercontent.com"
 }
@@ -43,7 +43,7 @@ data "aws_iam_openid_connect_provider" "github" {
 }
 
 # -----------------------------------------------------------------------------
-# 1. AWS IAM ROLES (OIDC TRUST POLICIES)
+# 1. AWS IAM ROLES (OIDC TRUST POLICIES WITH GITHUB ID WILDCARDS)
 # -----------------------------------------------------------------------------
 
 # Role 1: DevOps Role (Container build & ECR push)
@@ -65,8 +65,8 @@ resource "aws_iam_role" "devops" {
           }
           StringLike = {
             "token.actions.githubusercontent.com:sub" = [
-              "repo:${local.github_owner}*${local.repo_app}*:*",
-              "repo:${local.github_owner}*${local.repo_infra}*:*"
+              "repo:${local.github_owner}*${local.repo_infra}*:*",
+              "repo:${local.github_owner}*${local.repo_app}*:*"
             ]
           }
         }
@@ -80,7 +80,7 @@ resource "aws_iam_role_policy_attachment" "devops_ecr" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPowerUser"
 }
 
-# Role 2: SA Role (Terraform planning and read operations)
+# Role 2: SA Role (Terraform planning and resource provisioning)
 resource "aws_iam_role" "sa" {
   name = "carelink-github-sa-role"
 
@@ -99,8 +99,8 @@ resource "aws_iam_role" "sa" {
           }
           StringLike = {
             "token.actions.githubusercontent.com:sub" = [
-              "repo:${local.github_owner}/${local.repo_infra}:*",
-              "repo:${local.github_owner}/${local.repo_app}:*"
+              "repo:${local.github_owner}*${local.repo_infra}*:*",
+              "repo:${local.github_owner}*${local.repo_app}*:*"
             ]
           }
         }
@@ -109,9 +109,9 @@ resource "aws_iam_role" "sa" {
   })
 }
 
-resource "aws_iam_role_policy_attachment" "sa_readonly" {
+resource "aws_iam_role_policy_attachment" "sa_admin" {
   role       = aws_iam_role.sa.name
-  policy_arn = "arn:aws:iam::aws:policy/ReadOnlyAccess"
+  policy_arn = "arn:aws:iam::aws:policy/AdministratorAccess"
 }
 
 # Role 3: SRE Role (Observability and CloudWatch operations)
@@ -133,8 +133,8 @@ resource "aws_iam_role" "sre" {
           }
           StringLike = {
             "token.actions.githubusercontent.com:sub" = [
-              "repo:${local.github_owner}/${local.repo_infra}:*",
-              "repo:${local.github_owner}/${local.repo_app}:*"
+              "repo:${local.github_owner}*${local.repo_infra}*:*",
+              "repo:${local.github_owner}*${local.repo_app}*:*"
             ]
           }
         }
@@ -167,10 +167,10 @@ resource "github_repository_environment" "production" {
 }
 
 # -----------------------------------------------------------------------------
-# 3. GLOBAL REPOSITORY VARIABLES (AVAILABLE TO ALL ACTIONS)
+# 3. GLOBAL REPOSITORY VARIABLES (FOR ALL GITHUB ACTIONS)
 # -----------------------------------------------------------------------------
 
-# Variables for App Repository
+# App Repo Variables
 resource "github_actions_variable" "app_aws_region" {
   repository    = local.repo_app
   variable_name = "AWS_REGION"
@@ -195,7 +195,7 @@ resource "github_actions_variable" "app_sre_role" {
   value         = aws_iam_role.sre.arn
 }
 
-# Variables for Infra Repository
+# Infra Repo Variables
 resource "github_actions_variable" "infra_aws_region" {
   repository    = local.repo_infra
   variable_name = "AWS_REGION"
