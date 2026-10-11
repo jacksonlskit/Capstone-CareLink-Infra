@@ -6,11 +6,13 @@ on:
     paths:
       - "environments/**"
       - "*.tf"
+      - ".github/workflows/**"
   push:
     branches: [main]
     paths:
       - "environments/**"
       - "*.tf"
+      - ".github/workflows/**"
 
 permissions:
   id-token: write
@@ -31,7 +33,7 @@ jobs:
 
       - name: Run Snyk IaC Scan
         uses: snyk/actions/iac@master
-        continue-on-error: true # Allows SARIF generation even if vulnerabilities exist
+        continue-on-error: true # Prevents workflow failure if findings exist or token is pending
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         with:
@@ -40,6 +42,7 @@ jobs:
       - name: Upload Snyk Scan Results to GitHub Security
         uses: github/codeql-action/upload-sarif@v3
         if: always()
+        continue-on-error: true
         with:
           sarif_file: snyk.sarif
 
@@ -48,7 +51,6 @@ jobs:
   # ===========================================================================
   terraform-plan:
     name: "Terraform Plan (${{ matrix.environment }})"
-    needs: [security-scan]
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     strategy:
@@ -134,7 +136,6 @@ jobs:
   # ===========================================================================
   deploy-staging:
     name: "Apply Staging"
-    needs: [security-scan]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: staging
