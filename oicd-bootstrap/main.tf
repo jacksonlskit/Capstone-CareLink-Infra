@@ -38,16 +38,23 @@ data "github_user" "current" {
   username = local.github_owner
 }
 
-data "aws_iam_openid_connect_provider" "github" {
-  url = local.oidc_url
+resource "aws_iam_openid_connect_provider" "github" {
+  url             = "https://token.actions.githubusercontent.com"
+  client_id_list  = ["sts.amazonaws.com"]
+  thumbprint_list = [
+    "6938fd4d98bab03faadb97b34396831e3780aea1",
+    "1c58a3a8518e8759bf075b76b750d4f2df264fcd"
+  ]
 }
+
 
 # -----------------------------------------------------------------------------
 # 1. S3 BACKEND STORAGE (OPTION 1: NATIVE S3 LOCKFILE - NO DYNAMODB)
 # -----------------------------------------------------------------------------
 
 resource "aws_s3_bucket" "tf_state" {
-  bucket = "carelink-terraform-state-${local.aws_region}-${data.aws_caller_identity.current.account_id}"
+  bucket = "carelink-infra-state-${local.aws_region}-${data.aws_caller_identity.current.account_id}"
+  force_destroy = false
 
   lifecycle {
     prevent_destroy = true
@@ -94,7 +101,7 @@ resource "aws_iam_role" "devops" {
       {
         Effect = "Allow"
         Principal = {
-          Federated = data.aws_iam_openid_connect_provider.github.arn
+          Federated = aws_iam_openid_connect_provider.github.arn
         }
         Action = "sts:AssumeRoleWithWebIdentity"
         Condition = {
@@ -128,7 +135,7 @@ resource "aws_iam_role" "sa" {
       {
         Effect = "Allow"
         Principal = {
-          Federated = data.aws_iam_openid_connect_provider.github.arn
+          Federated = aws_iam_openid_connect_provider.github.arn
         }
         Action = "sts:AssumeRoleWithWebIdentity"
         Condition = {
@@ -162,7 +169,7 @@ resource "aws_iam_role" "sre" {
       {
         Effect = "Allow"
         Principal = {
-          Federated = data.aws_iam_openid_connect_provider.github.arn
+          Federated = aws_iam_openid_connect_provider.github.arn
         }
         Action = "sts:AssumeRoleWithWebIdentity"
         Condition = {

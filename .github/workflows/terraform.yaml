@@ -18,7 +18,7 @@ permissions:
   id-token: write
   contents: read
   pull-requests: write
-  security-events: write # Required for uploading SARIF reports to GitHub Security
+  security-events: write
 
 jobs:
   # ===========================================================================
@@ -33,7 +33,7 @@ jobs:
 
       - name: Run Snyk IaC Scan
         uses: snyk/actions/iac@master
-        continue-on-error: true # Prevents workflow failure if findings exist or token is pending
+        continue-on-error: true
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         with:
@@ -47,12 +47,16 @@ jobs:
           sarif_file: snyk.sarif
 
   # ===========================================================================
-  # 2. PLAN PHASE: Concurrently plans Staging & Production on Pull Request
+  # 2. PLAN PHASE: Runs on Pull Request for Staging & Production
   # ===========================================================================
   terraform-plan:
     name: "Terraform Plan (${{ matrix.environment }})"
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+      pull-requests: write
     strategy:
       fail-fast: false
       matrix:
@@ -71,8 +75,7 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.SA_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION }} # us-east-1
-          audience: sts.amazonaws.com
+          aws-region: ${{ vars.AWS_REGION }}
 
       - name: Terraform Format Check
         run: terraform fmt -check
@@ -139,6 +142,9 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: staging
+    permissions:
+      id-token: write
+      contents: read
 
     steps:
       - name: Checkout Code
@@ -153,8 +159,7 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.SA_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION }} # us-east-1
-          audience: sts.amazonaws.com
+          aws-region: ${{ vars.AWS_REGION }}
 
       - name: Terraform Init
         run: |
@@ -171,7 +176,7 @@ jobs:
             -input=false
 
   # ===========================================================================
-  # 4. APPLY PRODUCTION: Runs after Staging + Pauses for Manual Approval
+  # 4. APPLY PRODUCTION: Pauses for Approval on Push to Main
   # ===========================================================================
   deploy-production:
     name: "Apply Production"
@@ -179,6 +184,9 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: production
+    permissions:
+      id-token: write
+      contents: read
 
     steps:
       - name: Checkout Code
@@ -193,8 +201,7 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.SA_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION }} # us-east-1
-          audience: sts.amazonaws.com
+          aws-region: ${{ vars.AWS_REGION }}
 
       - name: Terraform Init
         run: |
