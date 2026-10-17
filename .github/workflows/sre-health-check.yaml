@@ -17,19 +17,7 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
-      - name: Debug OIDC Token and Role ARN
-        run: |
-          echo "Target Role ARN: '${{ vars.SRE_ROLE_ARN }}'"
-          echo "Target Region: '${{ vars.AWS_REGION }}'"
-          
-          # Fetch and decode the JWT payload GitHub generates
-          TOKEN=$(curl -sLS "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com" \
-            -H "User-Agent: actions/runner" \
-            -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" | jq -r '.value')
-          
-          echo "Decoded OIDC Claims:"
-          jq -R 'split(".") | .[1] | @base64d | fromjson | {iss, aud, sub}' <<< "$TOKEN"
-
+      
       - name: Configure AWS Credentials (SRE Role via OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
