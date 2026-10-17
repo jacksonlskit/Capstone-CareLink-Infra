@@ -13,7 +13,7 @@ terraform {
 }
 
 provider "aws" {
-  region = "us-east-1"
+  region = local.aws_region
 }
 
 provider "github" {
@@ -38,8 +38,12 @@ data "github_user" "current" {
   username = local.github_owner
 }
 
+# -----------------------------------------------------------------------------
+# OIDC IDENTITY PROVIDER
+# -----------------------------------------------------------------------------
+
 resource "aws_iam_openid_connect_provider" "github" {
-  url            = "https://token.actions.githubusercontent.com"
+  url            = local.oidc_url
   client_id_list = ["sts.amazonaws.com"]
   thumbprint_list = [
     "6938fd4d98bab03faadb97b34396831e3780aea1",
@@ -47,9 +51,8 @@ resource "aws_iam_openid_connect_provider" "github" {
   ]
 }
 
-
 # -----------------------------------------------------------------------------
-# 1. S3 BACKEND STORAGE (OPTION 1: NATIVE S3 LOCKFILE - NO DYNAMODB)
+# 1. S3 BACKEND STORAGE (NATIVE S3 LOCKFILE - NO DYNAMODB)
 # -----------------------------------------------------------------------------
 
 resource "aws_s3_bucket" "tf_state" {
@@ -88,12 +91,12 @@ resource "aws_s3_bucket_public_access_block" "tf_state_block_public" {
 }
 
 # -----------------------------------------------------------------------------
-# 2. AWS IAM ROLES (OIDC TRUST POLICIES WITH WILDCARD CLAIMS)
+# 2. ENVIRONMENT-BASED IAM ROLES & POLICIES
 # -----------------------------------------------------------------------------
 
-# Role 1: DevOps Role (Container build & ECR push)
-resource "aws_iam_role" "devops" {
-  name = "carelink-github-devops-role"
+# Staging IAM Role
+resource "aws_iam_role" "staging" {
+  name = "carelink-github-staging-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -107,11 +110,9 @@ resource "aws_iam_role" "devops" {
         Condition = {
           StringEquals = {
             "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
-          }
-          StringLike = {
             "token.actions.githubusercontent.com:sub" = [
-              "repo:${local.github_owner}/${local.repo_infra}*:*",
-              "repo:${local.github_owner}/${local.repo_app}*:*"
+              "repo:${local.github_owner}/${local.repo_infra}:environment:staging",
+              "repo:${local.github_owner}/${local.repo_app}:environment:staging"
             ]
           }
         }
@@ -120,48 +121,14 @@ resource "aws_iam_role" "devops" {
   })
 }
 
-resource "aws_iam_role_policy_attachment" "devops_ecr" {
-  role       = aws_iam_role.devops.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPowerUser"
-}
-
-# Role 2: SA Role (Terraform planning and full resource provisioning)
-resource "aws_iam_role" "sa" {
-  name = "carelink-github-sa-role"
-
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Principal = {
-          Federated = aws_iam_openid_connect_provider.github.arn
-        }
-        Action = "sts:AssumeRoleWithWebIdentity"
-        Condition = {
-          StringEquals = {
-            "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
-          }
-          StringLike = {
-            "token.actions.githubusercontent.com:sub" = [
-              "repo:${local.github_owner}/${local.repo_infra}*:*",
-              "repo:${local.github_owner}/${local.repo_app}*:*"
-            ]
-          }
-        }
-      }
-    ]
-  })
-}
-
-resource "aws_iam_role_policy_attachment" "sa_admin" {
-  role       = aws_iam_role.sa.name
+resource "aws_iam_role_policy_attachment" "staging_admin" {
+  role       = aws_iam_role.staging.name
   policy_arn = "arn:aws:iam::aws:policy/AdministratorAccess"
 }
 
-# Role 3: SRE Role (Observability and CloudWatch operations)
-resource "aws_iam_role" "sre" {
-  name = "carelink-github-sre-role"
+# Production IAM Role
+resource "aws_iam_role" "production" {
+  name = "carelink-github-production-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -175,11 +142,9 @@ resource "aws_iam_role" "sre" {
         Condition = {
           StringEquals = {
             "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
-          }
-          StringLike = {
             "token.actions.githubusercontent.com:sub" = [
-              "repo:${local.github_owner}/${local.repo_infra}:*",
-              "repo:${local.github_owner}/${local.repo_app}:*"
+              "repo:${local.github_owner}/${local.repo_infra}:environment:production",
+              "repo:${local.github_owner}/${local.repo_app}:environment:production"
             ]
           }
         }
@@ -188,14 +153,13 @@ resource "aws_iam_role" "sre" {
   })
 }
 
-
-resource "aws_iam_role_policy_attachment" "sre_cloudwatch" {
-  role       = aws_iam_role.sre.name
-  policy_arn = "arn:aws:iam::aws:policy/CloudWatchFullAccess"
+resource "aws_iam_role_policy_attachment" "production_admin" {
+  role       = aws_iam_role.production.name
+  policy_arn = "arn:aws:iam::aws:policy/AdministratorAccess"
 }
 
 # -----------------------------------------------------------------------------
-# 3. GITHUB ENVIRONMENTS (STAGING & PRODUCTION FOR BOTH REPOSITORIES)
+# 3. GITHUB ENVIRONMENTS (STAGING & PRODUCTION)
 # -----------------------------------------------------------------------------
 
 # Infra Repo Environments
@@ -208,7 +172,7 @@ resource "github_repository_environment" "infra_production" {
   repository  = local.repo_infra
   environment = "production"
 
-  # Production requires manual reviewer approval before apply
+  # Production requires manual reviewer approval before deployment
   reviewers {
     users = [data.github_user.current.id]
   }
@@ -230,7 +194,41 @@ resource "github_repository_environment" "app_production" {
 }
 
 # -----------------------------------------------------------------------------
-# 4. GLOBAL REPOSITORY VARIABLES
+# 4. ENVIRONMENT-SCOPED VARIABLES (AWS_ROLE_ARN AUTO-SELECTION)
+# -----------------------------------------------------------------------------
+
+# Infra Repo Environment Variables
+resource "github_actions_environment_variable" "infra_staging_role" {
+  repository    = local.repo_infra
+  environment   = github_repository_environment.infra_staging.environment
+  variable_name = "AWS_ROLE_ARN"
+  value         = aws_iam_role.staging.arn
+}
+
+resource "github_actions_environment_variable" "infra_production_role" {
+  repository    = local.repo_infra
+  environment   = github_repository_environment.infra_production.environment
+  variable_name = "AWS_ROLE_ARN"
+  value         = aws_iam_role.production.arn
+}
+
+# App Repo Environment Variables
+resource "github_actions_environment_variable" "app_staging_role" {
+  repository    = local.repo_app
+  environment   = github_repository_environment.app_staging.environment
+  variable_name = "AWS_ROLE_ARN"
+  value         = aws_iam_role.staging.arn
+}
+
+resource "github_actions_environment_variable" "app_production_role" {
+  repository    = local.repo_app
+  environment   = github_repository_environment.app_production.environment
+  variable_name = "AWS_ROLE_ARN"
+  value         = aws_iam_role.production.arn
+}
+
+# -----------------------------------------------------------------------------
+# 5. GLOBAL REPOSITORY VARIABLES
 # -----------------------------------------------------------------------------
 
 # App Repo Variables
@@ -240,24 +238,6 @@ resource "github_actions_variable" "app_aws_region" {
   value         = local.aws_region
 }
 
-resource "github_actions_variable" "app_devops_role" {
-  repository    = local.repo_app
-  variable_name = "DEVOPS_ROLE_ARN"
-  value         = aws_iam_role.devops.arn
-}
-
-resource "github_actions_variable" "app_sa_role" {
-  repository    = local.repo_app
-  variable_name = "SA_ROLE_ARN"
-  value         = aws_iam_role.sa.arn
-}
-
-resource "github_actions_variable" "app_sre_role" {
-  repository    = local.repo_app
-  variable_name = "SRE_ROLE_ARN"
-  value         = aws_iam_role.sre.arn
-}
-
 # Infra Repo Variables
 resource "github_actions_variable" "infra_aws_region" {
   repository    = local.repo_infra
@@ -265,25 +245,6 @@ resource "github_actions_variable" "infra_aws_region" {
   value         = local.aws_region
 }
 
-resource "github_actions_variable" "infra_devops_role" {
-  repository    = local.repo_infra
-  variable_name = "DEVOPS_ROLE_ARN"
-  value         = aws_iam_role.devops.arn
-}
-
-resource "github_actions_variable" "infra_sa_role" {
-  repository    = local.repo_infra
-  variable_name = "SA_ROLE_ARN"
-  value         = aws_iam_role.sa.arn
-}
-
-resource "github_actions_variable" "infra_sre_role" {
-  repository    = local.repo_infra
-  variable_name = "SRE_ROLE_ARN"
-  value         = aws_iam_role.sre.arn
-}
-
-# State Bucket Name Variable for Workflows
 resource "github_actions_variable" "infra_state_bucket" {
   repository    = local.repo_infra
   variable_name = "TF_STATE_BUCKET"
@@ -291,7 +252,7 @@ resource "github_actions_variable" "infra_state_bucket" {
 }
 
 # -----------------------------------------------------------------------------
-# 5. GITHUB BRANCH PROTECTION RULESETS
+# 6. GITHUB BRANCH PROTECTION RULESETS
 # -----------------------------------------------------------------------------
 
 resource "github_repository_ruleset" "app_main_protection" {
@@ -369,17 +330,16 @@ resource "github_repository_ruleset" "infra_main_protection" {
 # -----------------------------------------------------------------------------
 
 output "tf_state_bucket_name" {
-  value = aws_s3_bucket.tf_state.bucket
+  description = "The name of the S3 bucket configured for Terraform native state locking"
+  value       = aws_s3_bucket.tf_state.bucket
 }
 
-output "devops_role_arn" {
-  value = aws_iam_role.devops.arn
+output "staging_role_arn" {
+  description = "IAM Role ARN for Staging environment workflows"
+  value       = aws_iam_role.staging.arn
 }
 
-output "sa_role_arn" {
-  value = aws_iam_role.sa.arn
-}
-
-output "sre_role_arn" {
-  value = aws_iam_role.sre.arn
+output "production_role_arn" {
+  description = "IAM Role ARN for Production environment workflows"
+  value       = aws_iam_role.production.arn
 }

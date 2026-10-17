@@ -1,4 +1,4 @@
-name: "SRE: Infrastructure Health & Metric Check"
+name: "SRE: Health & Monitoring Check"
 
 on:
   schedule:
@@ -13,25 +13,25 @@ jobs:
   cloudwatch-health-audit:
     name: "Audit CloudWatch Alarms & System Health"
     runs-on: ubuntu-latest
+    environment: production  # Authorizes the runner using the Production OIDC role
 
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
-      
-      - name: Configure AWS Credentials (SRE Role via OIDC)
+
+      - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ vars.SRE_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION }} # us-east-1
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
           audience: sts.amazonaws.com
 
-      - name: Verify Assumed SRE Identity
-        run: |
-          aws sts get-caller-identity
+      - name: Verify Assumed Identity
+        run: aws sts get-caller-identity
 
       - name: Check CloudWatch Alarms in ALARM State
         run: |
-          echo "=== Querying Active Alarms in ALARM State (us-east-1) ==="
+          echo "=== Querying Active Alarms in ALARM State (${{ vars.AWS_REGION }}) ==="
           ALARMS=$(aws cloudwatch describe-alarms \
             --state-value ALARM \
             --query 'MetricAlarms[*].[AlarmName,MetricName,Namespace,StateUpdatedTimestamp]' \
@@ -42,11 +42,11 @@ jobs:
           COUNT=$(aws cloudwatch describe-alarms --state-value ALARM --query 'length(MetricAlarms)')
           echo "Total active alarms: $COUNT"
           if [ "$COUNT" -gt "0" ]; then
-            echo "::warning title=Active Alarms Detected::There are $COUNT alarms currently triggered in us-east-1."
+            echo "::warning title=Active Alarms Detected::There are $COUNT alarms currently triggered in ${{ vars.AWS_REGION }}."
           fi
 
       - name: Query Recent System Log Groups
         run: |
-          echo "Checking CloudWatch Log Groups status in us-east-1..."
+          echo "Checking CloudWatch Log Groups status in ${{ vars.AWS_REGION }}..."
           aws logs describe-log-groups --limit 10 \
             --query 'logGroups[*].[logGroupName,storedBytes]' --output table
