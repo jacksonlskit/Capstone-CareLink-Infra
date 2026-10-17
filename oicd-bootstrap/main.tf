@@ -39,8 +39,8 @@ data "github_user" "current" {
 }
 
 resource "aws_iam_openid_connect_provider" "github" {
-  url             = "https://token.actions.githubusercontent.com"
-  client_id_list  = ["sts.amazonaws.com"]
+  url            = "https://token.actions.githubusercontent.com"
+  client_id_list = ["sts.amazonaws.com"]
   thumbprint_list = [
     "6938fd4d98bab03faadb97b34396831e3780aea1",
     "1c58a3a8518e8759bf075b76b750d4f2df264fcd"
@@ -53,7 +53,7 @@ resource "aws_iam_openid_connect_provider" "github" {
 # -----------------------------------------------------------------------------
 
 resource "aws_s3_bucket" "tf_state" {
-  bucket = "carelink-infra-state-${local.aws_region}-${data.aws_caller_identity.current.account_id}"
+  bucket        = "carelink-infra-state-${local.aws_region}-${data.aws_caller_identity.current.account_id}"
   force_destroy = false
 
   lifecycle {
@@ -110,8 +110,8 @@ resource "aws_iam_role" "devops" {
           }
           StringLike = {
             "token.actions.githubusercontent.com:sub" = [
-              "repo:${local.github_owner}*${local.repo_infra}*:*",
-              "repo:${local.github_owner}*${local.repo_app}*:*"
+              "repo:${local.github_owner}/${local.repo_infra}*:*",
+              "repo:${local.github_owner}/${local.repo_app}*:*"
             ]
           }
         }
@@ -144,8 +144,8 @@ resource "aws_iam_role" "sa" {
           }
           StringLike = {
             "token.actions.githubusercontent.com:sub" = [
-              "repo:${local.github_owner}*${local.repo_infra}*:*",
-              "repo:${local.github_owner}*${local.repo_app}*:*"
+              "repo:${local.github_owner}/${local.repo_infra}*:*",
+              "repo:${local.github_owner}/${local.repo_app}*:*"
             ]
           }
         }
@@ -178,8 +178,8 @@ resource "aws_iam_role" "sre" {
           }
           StringLike = {
             "token.actions.githubusercontent.com:sub" = [
-              "repo:${local.github_owner}*${local.repo_infra}*:*",
-              "repo:${local.github_owner}*${local.repo_app}*:*"
+              "repo:${local.github_owner}/${local.repo_infra}:*",
+              "repo:${local.github_owner}/${local.repo_app}:*"
             ]
           }
         }
@@ -187,6 +187,7 @@ resource "aws_iam_role" "sre" {
     ]
   })
 }
+
 
 resource "aws_iam_role_policy_attachment" "sre_cloudwatch" {
   role       = aws_iam_role.sre.name
